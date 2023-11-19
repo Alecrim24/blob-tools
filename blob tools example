@@ -1,0 +1,96 @@
+#!/bin/bash
+# Request resources:
+#SBATCH -c 64 # CPU core
+#SBATCH --mem=245G # memory required, up to 250G on standard nodes
+#SBATCH --gres=tmp:400G # temporary disk space on the compute node ($TMPDIR), up to 400G
+#SBATCH -t 72:00:00 # time limit for job (format: days-hours:minutes:seconds)
+#SBATCH --mail-user=ngbourne1@sheffield.ac.uk # Email address to sent status report
+#SBATCH --mail-type=BEGIN,END,FAIL # Types of status update to email
+#SBATCH -p shared # Designated queue for job (defaults to shared)
+
+# Commands to execute start here
+
+module load bioinformatics
+module load blobtoolkit2/3.1.6
+module load samtools/1.17
+module load minimap2
+module load blast
+
+unset OMP_PROC_BIND
+unset OMP_PLACES
+
+## VARIABLES
+BUSCO_DIR=(/nobackup/sdfs27/PacBio_Assemblies/S.wilkinsonii/BUSCO/S.wilk_4n_Busco_v5_embryophyta_odb10) # Your Busco directory path
+dir_path_1=(/nobackup/sdfs27/blobplot/S.wilkinsonii/blobplot_out) # specify your output path
+dir_path=($dir_path_1/BlobToolKit)
+Prim_asm_dp=(/nobackup/sdfs27/PacBio_Assemblies/S.wilkinsonii/4n/S.wilk_nuclear_4n.asm.bp.p_ctg.fa) # Genome assembly
+Prim_asm=(S.wilk_nuclear_4n.asm.bp.p_ctg.fa) # Genome assembly
+
+Prim_blob=(S.wilkinsonii_prime) # species_prime
+pb_list=(/nobackup/sdfs27/Squamellaria/S.wilkinsonii/PacBio/Reads/S.wilk_reads.fastq) # path to reads
+
+mkdir -p $dir_path
+
+cp -u $Prim_asm_dp $dir_path
+
+echo "All files copied"
+
+####################################
+## CREATE BLOBTOOLS DIRECTORY ######
+####################################
+
+cd $dir_path
+
+blobtools create \
+    --fasta $Prim_asm \
+    ./$Prim_blob
+
+## ADD BUSCO
+
+blobtools add \
+     --busco $BUSCO_DIR/run_embryophyta_odb10/full_table.tsv \ 
+     ./$Prim_blob
+
+##################
+### COVERAGE #####
+##################
+
+echo "############### Coverage ##############"
+
+minimap2 -ax map-pb \
+         -t 64 $Prim_asm \
+         $pb_list \
+| samtools sort -@16 -O BAM -o $Prim_asm.reads.bam -
+
+samtools coverage $Prim_asm.reads.bam > $Prim_asm.coverage.txt
+
+blobtools add --text $Prim_asm.coverage.txt --text-header --text-cols '#rname=identifier,meandepth=my_reads_cov' ./$Prim_blob
+
+blobtools add --key plot.y=my_reads_cov ./$Prim_blob
+
+#blobtools add \
+   # --cov $Prim_asm.reads.bam \
+   # ./$Prim_blob
+
+cd $dir_path
+
+# Add blast hits to blobtools
+blobtools add \
+    --hits /nobackup/sdfs27/blobplot/S.wilkinsonii/megablast_outs/S.wilkinsonii_megablast.out \  # add your megablast output
+    --taxrule bestsum \
+    --taxdump /nobackup/sdfs27/blobplot/S.wilkinsonii/blobplot_out/taxdump \  # taxdump file
+    --replace \
+    $Prim_blob
+
+# Create new fasta files to fill with uncont seq
+
+cat $Prim_asm \
+ > $Prim_asm.uncont.fa
+
+# Filter out contaiminates
+blobtools filter \
+    --param bestsum_phylum--Keys=no-hit,Streptophyta \
+    --invert \
+    --output $Prim_blob-uncont \
+    --fasta $Prim_asm.uncont.fa \
+    $Prim_blob
